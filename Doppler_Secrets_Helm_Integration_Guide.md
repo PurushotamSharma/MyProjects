@@ -1,153 +1,161 @@
 
-# **Integrating Secrets with Doppler using Helm on Ubuntu**
+# Doppler Integration with Helm and Kubernetes
 
-This guide walks you through the process of integrating Doppler secrets with your Kubernetes cluster using Helm on an Ubuntu machine. You'll install necessary tools, authenticate Doppler, and deploy a Helm chart that integrates with Doppler to manage secrets.
+## Introduction
 
-## **Prerequisites**
-Before you begin, ensure the following:
-- An Ubuntu machine (local or remote).
-- A Kubernetes cluster set up and configured (`kubectl` installed).
-- Helm installed on your Ubuntu machine.
-- A Doppler account and a configured project.
+This document provides a step-by-step guide to integrating Doppler with Kubernetes using Helm. The Doppler Kubernetes Operator will manage your secrets in Kubernetes, syncing them automatically from Doppler.
 
-## **Step 1: Install Helm**
+## Pre-requisites
 
-Helm is a package manager for Kubernetes that allows you to define, install, and upgrade complex Kubernetes applications.
+Before starting, ensure you have the following:
 
-1. **Update the package list:**
-   ```bash
-   sudo apt-get update
-   ```
+- **Ubuntu Machine**
+- **Helm** installed. If not, install it [here](https://helm.sh/docs/intro/install/).
+- **Doppler CLI** installed. Install it using the [official guide](https://docs.doppler.com/docs/install-cli).
+- **kubectl** installed and configured to interact with your Kubernetes cluster.
 
-2. **Install Helm:**
-   Use the following command to download and install Helm:
-   ```bash
-   curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-   ```
+## Installation Steps
 
-3. **Verify Helm Installation:**
-   Confirm Helm is installed correctly:
-   ```bash
-   helm version
-   ```
-   This should display the version of Helm you have installed.
+### 1. Add Doppler Helm Repository
 
-## **Step 2: Install Doppler CLI**
+Add the Doppler Helm repository to your Helm installation:
 
-The Doppler CLI is used to interact with the Doppler platform, manage secrets, and perform various operations.
+```bash
+helm repo add doppler https://helm.doppler.com
+helm repo update
+```
 
-1. **Install the Doppler CLI:**
-   ```bash
-   curl -Ls https://cli.doppler.com/install.sh | sudo sh
-   ```
+### 2. Install the Doppler Kubernetes Operator
 
-2. **Verify Doppler Installation:**
-   Check if Doppler CLI is installed by running:
-   ```bash
-   doppler --version
-   ```
-   This should display the version of the Doppler CLI installed.
+Install the Doppler Kubernetes Operator in your cluster:
 
-## **Step 3: Authenticate Doppler CLI**
+```bash
+helm install doppler-operator doppler/doppler-operator --namespace doppler-operator-system --create-namespace
+```
 
-After installing the Doppler CLI, you need to authenticate with your Doppler account to access your secrets.
+Verify that the Doppler Operator is installed and running:
 
-1. **Login to Doppler:**
-   ```bash
-   doppler login
-   ```
-   This will prompt you to authenticate via your Doppler account.
+```bash
+kubectl get pods --namespace doppler-operator-system
+```
 
-2. **Setup Doppler Project and Environment:**
-   ```bash
-   doppler setup
-   ```
-   Follow the prompts to select your project and environment within Doppler.
+### 3. Create Doppler Token Secret
 
-## **Step 4: Install the Doppler Helm Plugin**
+To fetch secrets from your Doppler config, you'll need to create a Doppler Token Secret.
 
-To integrate Doppler secrets with Helm, you'll need to install the Doppler Helm plugin.
+#### Option 1: Manually Generate Token and Create Secret
 
-1. **Add Doppler Helm Plugin:**
-   ```bash
-   helm plugin install https://github.com/DopplerHQ/helm-doppler
-   ```
+Generate a Doppler Service Token from the Doppler dashboard and create the Kubernetes secret using the following command:
 
-2. **Verify Plugin Installation:**
-   List installed Helm plugins to verify:
-   ```bash
-   helm plugin list
-   ```
-   You should see `doppler` listed as one of the plugins.
+```bash
+kubectl create secret generic doppler-token-secret   --namespace doppler-operator-system   --from-literal=serviceToken=dp.st.dev.XXXX
+```
 
-## **Step 5: Create a Helm Values File**
+Replace `dp.st.dev.XXXX` with your actual Doppler Service Token.
 
-A `values.yaml` file is used to configure Helm charts. You'll specify the Doppler integration details in this file.
+#### Option 2: Generate Token with Doppler CLI
 
-1. **Create `values.yaml`:**
-   ```yaml
-   doppler:
-     serviceToken: <DOPPLER_SERVICE_TOKEN>
-     config: <DOPPLER_CONFIG>
-     project: <DOPPLER_PROJECT>
-     secrets:
-       - name: <SECRET_NAME>
-         path: <SECRET_PATH>
-         mountPath: <MOUNT_PATH>
-   ```
-   Replace the placeholders:
-   - **`DOPPLER_SERVICE_TOKEN`**: Your Doppler project's service token.
-   - **`DOPPLER_CONFIG`**: The environment configuration in Doppler (e.g., dev, prod).
-   - **`DOPPLER_PROJECT`**: The name of your Doppler project.
-   - **`SECRET_NAME`**: The name you want to give to the Kubernetes secret.
-   - **`SECRET_PATH`**: The path within Doppler where the secret is stored.
-   - **`MOUNT_PATH`**: The location in your pod where the secret will be mounted.
+If you have the Doppler CLI installed, you can generate a Service Token and create the secret in one step:
 
-## **Step 6: Deploy with Helm**
+```bash
+kubectl create secret generic doppler-token-secret   --namespace doppler-operator-system   --from-literal=serviceToken=$(doppler configure get token --plain)
+```
 
-Now that you have your `values.yaml` configured, you can deploy your Helm chart with Doppler integration.
+### 4. Create DopplerSecret CRD
 
-1. **Install or Upgrade Helm Release:**
-   ```bash
-   helm upgrade --install <release_name> <chart_name> -f values.yaml
-   ```
-   Replace:
-   - **`<release_name>`**: The name for your Helm release.
-   - **`<chart_name>`**: The Helm chart you are deploying.
+Next, create a DopplerSecret CRD that references the Doppler Token Secret and specifies the name and namespace of the managed secret in Kubernetes.
 
-2. **Verify Deployment:**
-   Check if your pods are running with the following command:
-   ```bash
-   kubectl get pods
-   ```
-   Ensure all the pods are up and running correctly.
+```yaml
+apiVersion: secrets.doppler.com/v1alpha1
+kind: DopplerSecret
+metadata:
+  name: dopplersecret-test
+  namespace: doppler-operator-system
+spec:
+  tokenSecret:
+    name: doppler-token-secret
+  managedSecret:
+    name: doppler-test-secret
+    namespace: default
+    type: Opaque
+```
 
-## **Step 7: Verify Doppler Integration**
+Apply the CRD:
 
-To ensure that your Doppler secrets are correctly integrated and accessible:
+```bash
+kubectl apply -f dopplersecret.yaml
+```
 
-1. **Check Pod Logs:**
-   View logs to confirm the secrets are injected properly:
-   ```bash
-   kubectl logs <pod_name>
-   ```
-   Replace **`<pod_name>`** with the name of your pod.
+### 5. Verify Secret Creation
 
-2. **Access Secrets within the Pod (Optional):**
-   If you need to verify the secrets directly:
-   ```bash
-   kubectl exec -it <pod_name> -- /bin/bash
-   cd <MOUNT_PATH>
-   cat <SECRET_FILE>
-   ```
-   Replace:
-   - **`<pod_name>`**: The name of your pod.
-   - **`<MOUNT_PATH>`**: The mount path you specified in `values.yaml`.
-   - **`<SECRET_FILE>`**: The file containing the secret.
+After applying the CRD, verify that the managed secret has been created by the operator:
 
-## **Additional Tips**
-- **RBAC Permissions**: Ensure your Kubernetes cluster has the necessary RBAC (Role-Based Access Control) permissions if you encounter permission issues.
-- **Updating Secrets**: You can update secrets directly in Doppler, and they will be automatically synced to your Kubernetes pods without requiring redeployment.
+```bash
+kubectl describe secrets --selector=secrets.doppler.com/subtype=dopplerSecret
+```
 
-## **Conclusion**
-You have successfully integrated Doppler secrets with your Kubernetes cluster using Helm. This setup ensures secure and efficient management of secrets within your Kubernetes applications.
+## Using Secrets in Deployments
+
+You can use the managed secret in your Kubernetes deployments in several ways.
+
+### 6. Use `envFrom` to Populate Environment Variables
+
+```yaml
+envFrom:
+  - secretRef:
+      name: doppler-test-secret
+```
+
+### 7. Use `valueFrom` to Inject Specific Environment Variables
+
+```yaml
+env:
+  - name: MY_APP_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: doppler-test-secret
+        key: MY_APP_SECRET
+```
+
+### 8. Use Secret as a Volume
+
+Create a volume from the secret:
+
+```yaml
+volumes:
+  - name: secret-volume
+    secret:
+      secretName: doppler-test-secret
+```
+
+Mount the volume to the container’s filesystem:
+
+```yaml
+volumeMounts:
+  - name: secret-volume
+    mountPath: /etc/secrets
+    readOnly: true
+```
+
+## Automatic Redeployments
+
+### 9. Enable Automatic Redeployments
+
+To enable automatic redeployments when secrets are updated:
+
+- Ensure the deployment is in the same namespace as the managed secret.
+- Ensure the deployment is of the `Deployment` resource type.
+- Add the `secrets.doppler.com/reload` annotation set to 'true'.
+
+Example:
+
+```yaml
+annotations:
+  secrets.doppler.com/reload: 'true'
+```
+
+The operator will update the annotation with the name `secrets.doppler.com/secretsupdate.<KUBERNETES_SECRET_NAME>` to trigger a redeployment.
+
+## Conclusion
+
+By following this guide, you've successfully integrated Doppler with your Kubernetes cluster using Helm, enabling automatic secret management and sync between Doppler and Kubernetes.
